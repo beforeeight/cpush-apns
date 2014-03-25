@@ -3,6 +3,7 @@ package com.cyou.cpush.apns.core;
 import io.netty.bootstrap.SSLBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.util.concurrent.Future;
@@ -67,6 +68,8 @@ class ApnsShortConnectionThread {
 	private static final InternalLogger log = InternalLoggerFactory
 			.getInstance(DefaultApnsConnection.class);
 
+	private static final int MAX_HANDSHAKE_RETRY = 3;
+
 	private final SSLBootstrap bootstrap;
 
 	/**
@@ -86,11 +89,17 @@ class ApnsShortConnectionThread {
 	 */
 	private int stopIndex = -1;
 
+	/**
+	 * times of handshake in this connection session
+	 */
+	private int handshakeTimes = 0;
+
 	public static final Notification TAIL_INVALID_NOTIFICATION = new DefaultNotification(
 			new Device(""), new Payload(""));
 
 	ApnsShortConnectionThread(SSLBootstrap bootstrap, Notification... message) {
 		this.bootstrap = bootstrap;
+		this.eventLoop = bootstrap.group().next();
 		// this.conf = conf;
 		if (message != null) {
 			this.notifications = new SortedNotification[message.length + 1];
@@ -105,10 +114,12 @@ class ApnsShortConnectionThread {
 		failedNotifications = new ArrayList<ErrorPacket>();
 	}
 
-	public Future<Iterable<ErrorPacket>> send() {
-		final NotificationsPromise promise = new NotificationsPromise(bootstrap
-				.group().next());
+	private final EventLoop eventLoop;
 
+	public Future<Iterable<ErrorPacket>> send() {
+
+		final NotificationsPromise promise = new NotificationsPromise(eventLoop);
+		/* listen on the progress of the pushing, detect disconnected and reconnect */
 		promise
 				.addListener(new GenericProgressiveFutureListener<ProgressivePromise<Iterable<ErrorPacket>>>() {
 
@@ -156,9 +167,6 @@ class ApnsShortConnectionThread {
 		return promise;
 	}
 
-	private static final int MAX_HANDSHAKE_RETRY = 3;
-	private int handshakeTimes = 0;
-
 	private static void connect(final ApnsShortConnectionThread connection,
 			final NotificationsPromise promise) {
 		/* create a new channel */
@@ -174,10 +182,20 @@ class ApnsShortConnectionThread {
 					/* write data to the channel after handshake success */
 					send(connection, future.get());
 				} else {
-					log.warn("a new channel connected to the APNS server fail");
+
 					connection.handshakeTimes++;
 					if (connection.handshakeTimes <= MAX_HANDSHAKE_RETRY) {
+						log.warn(String
+								.format(
+										"Channel connected to the APNS server failed, will retry %s time.",
+										connection.handshakeTimes));
 						connect(connection, promise);
+					} else {
+						log.warn(String
+								.format(
+										"Channel connected to the APNS server failed. Abandon connection after %d times connect",
+										connection.handshakeTimes));
+						promise.setFailure(future.cause());
 					}
 				}
 			}
@@ -189,7 +207,8 @@ class ApnsShortConnectionThread {
 			final NotificationsPromise promise) {
 		/* create a new channel and initial several handlers */
 		ChannelFuture connFuture = connection.bootstrap.connect(
-				new ApnsOutboundHandler(), new ApnsInboundHandler(promise));
+				connection.eventLoop, new ApnsOutboundHandler(),
+				new ApnsInboundHandler(promise));
 		final Channel channel = connFuture.channel();
 		return channel.pipeline().get(SslHandler.class).handshakeFuture();
 	}

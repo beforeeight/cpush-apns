@@ -7,6 +7,7 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
+import io.netty.channel.EventLoop;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.util.AttributeKey;
 import io.netty.util.internal.logging.InternalLogger;
@@ -21,7 +22,6 @@ import java.util.Map.Entry;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 
-
 public class SSLBootstrap extends AbstractBootstrap<SSLBootstrap, Channel>
 		implements HandlerBootstarp<ChannelHandler> {
 
@@ -33,7 +33,7 @@ public class SSLBootstrap extends AbstractBootstrap<SSLBootstrap, Channel>
 	private volatile SSLContext sslContext;
 
 	private ThreadLocal<ChannelHandler[]> initHandlers = new ThreadLocal<ChannelHandler[]>();
-	
+
 	public SSLBootstrap(SSLContext sslContext) {
 		this.sslContext = sslContext;
 	}
@@ -81,20 +81,30 @@ public class SSLBootstrap extends AbstractBootstrap<SSLBootstrap, Channel>
 	 * Connect a {@link Channel} to the remote peer.
 	 */
 	public ChannelFuture connect() {
+		EventLoop eventLoop = null;
+		return connect(eventLoop);
+	}
+
+	public ChannelFuture connect(EventLoop eventLoop) {
 		validate();
 		SocketAddress remoteAddress = this.remoteAddress;
 		if (remoteAddress == null) {
 			throw new IllegalStateException("remoteAddress not set");
 		}
-		return doConnect(remoteAddress, localAddress());
+		return doConnect(remoteAddress, localAddress(), eventLoop);
 	}
 
 	@Override
 	public ChannelFuture connect(ChannelHandler... handlers) {
+		EventLoop eventLoop = null;
+		return connect(eventLoop, handlers);
+	}
+
+	public ChannelFuture connect(EventLoop eventLoop, ChannelHandler... handlers) {
 		if (handlers != null) {
 			initHandlers.set(handlers);
 		}
-		ChannelFuture future = connect();
+		ChannelFuture future = connect(eventLoop);
 		if (handlers != null) {
 			initHandlers.remove();
 		}
@@ -139,12 +149,53 @@ public class SSLBootstrap extends AbstractBootstrap<SSLBootstrap, Channel>
 		return doConnect(remoteAddress, localAddress);
 	}
 
+	final ChannelFuture initAndRegister(EventLoop eventLoop) {
+		if (eventLoop == null) {
+			return super.initAndRegister();
+		} else {
+			final Channel channel = channelFactory().newChannel();
+			try {
+				init(channel);
+			} catch (Throwable t) {
+				channel.unsafe().closeForcibly();
+				return channel.newFailedFuture(t);
+			}
+
+			ChannelFuture regFuture = eventLoop.register(channel);
+			if (regFuture.cause() != null) {
+				if (channel.isRegistered()) {
+					channel.close();
+				} else {
+					channel.unsafe().closeForcibly();
+				}
+			}
+			// If we are here and the promise is not failed, it's one of the following
+			// cases:
+			// 1) If we attempted registration from the event loop, the registration
+			// has
+			// been completed at this point.
+			// i.e. It's safe to attempt bind() or connect() now beause the channel
+			// has
+			// been registered.
+			// 2) If we attempted registration from the other thread, the registration
+			// request has been successfully
+			// added to the event loop's task queue for later execution.
+			// i.e. It's safe to attempt bind() or connect() now:
+			// because bind() or connect() will be executed *after* the scheduled
+			// registration task is executed
+			// because register(), bind(), and connect() are all bound to the same
+			// thread.
+
+			return regFuture;
+		}
+	}
+
 	/**
 	 * @see {@link #connect()}
 	 */
 	private ChannelFuture doConnect(final SocketAddress remoteAddress,
-			final SocketAddress localAddress) {
-		final ChannelFuture regFuture = initAndRegister();
+			final SocketAddress localAddress, EventLoop eventLoop) {
+		final ChannelFuture regFuture = initAndRegister(eventLoop);
 		final Channel channel = regFuture.channel();
 		if (regFuture.cause() != null) {
 			return regFuture;
@@ -162,6 +213,11 @@ public class SSLBootstrap extends AbstractBootstrap<SSLBootstrap, Channel>
 			});
 		}
 		return promise;
+	}
+
+	private ChannelFuture doConnect(final SocketAddress remoteAddress,
+			final SocketAddress localAddress) {
+		return doConnect(remoteAddress, localAddress, null);
 	}
 
 	private static void doConnect0(final ChannelFuture regFuture,

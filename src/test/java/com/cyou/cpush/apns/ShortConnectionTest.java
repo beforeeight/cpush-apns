@@ -35,50 +35,53 @@ public class ShortConnectionTest {
 
 	@Test
 	public void testPushSingle() {
-		int maxNumberPerThread = 5;
-		// while (true) {
-		final AtomicInteger count = new AtomicInteger(0);
-		long start = System.currentTimeMillis();
-		try {
-			for (int j = 0; j < maxNumberPerThread; j++) {
-				count.incrementAndGet();
-				Notification n = new DefaultNotification(
-						new Device(
-								"8482ab925fe45415f2c871c07222a2150ae085eb0a2c47b0ab9b413be583842c"),
-						new Payload(String.format("%04d, %2$tD %2$tT", j, new Date())));
-				Future<Void> future = apns.push(n);
-				future.addListener(new FutureListener<Void>() {
-					@Override
-					public void operationComplete(Future<Void> future) throws Exception {
-						count.decrementAndGet();
-						if (future.isSuccess()) {
-						} else {
-							Throwable throwable = future.cause();
-							if (throwable instanceof ErrorPacket) {
-								ErrorPacket ep = (ErrorPacket) throwable;
-								System.out.println("[Failure] error-response code: "
-										+ ep.getStatus() + ", identifier: " + ep.getIdentifier()
-										+ ", token: " + ep.getNotification().getDevice().getToken());
+		int maxNumberPerThread = 50000;
+		while (true) {
+			final AtomicInteger count = new AtomicInteger(0);
+			long start = System.currentTimeMillis();
+			try {
+				for (int j = 0; j < maxNumberPerThread; j++) {
+					count.incrementAndGet();
+					Notification n = new DefaultNotification(
+							new Device(
+									"8482ab925fe45415f2c871c07222a2150ae085eb0a2c47b0ab9b413be583842c"),
+							new Payload(String.format("%04d, %2$tD %2$tT", j, new Date())));
+					Future<Void> future = apns.push(n);
+					future.addListener(new FutureListener<Void>() {
+						@Override
+						public void operationComplete(Future<Void> future) throws Exception {
+							count.decrementAndGet();
+							if (future.isSuccess()) {
+							} else {
+								Throwable throwable = future.cause();
+								if (throwable instanceof ErrorPacket) {
+									ErrorPacket ep = (ErrorPacket) throwable;
+									System.out.println("[Failure] error-response code: "
+											+ ep.getStatus() + ", identifier: " + ep.getIdentifier()
+											+ ", token: "
+											+ ep.getNotification().getDevice().getToken());
+								} else {
+									throwable.printStackTrace();
+								}
 							}
 						}
-					}
-				});
+					});
+				}
+				while (count.get() > 0) {
+					Thread.sleep(10000);
+				}
+				long end = System.currentTimeMillis();
+				System.out.println(String.format("%1$tD %1$tT: total cost %2$d 秒",
+						new Date(), (end - start) / 1000));
+			} catch (Exception e) {
+				e.printStackTrace();
+				Assert.fail();
+			} finally {
 			}
-			while (count.get() > 0) {
-				Thread.sleep(5000);
-			}
-			long end = System.currentTimeMillis();
-			System.out.println(String.format("%1$tD %1$tT: total cost %2$d 秒",
-					new Date(), (end - start) / 1000));
-		} catch (Exception e) {
-			e.printStackTrace();
-			Assert.fail();
-		} finally {
 		}
-		// }
 	}
 
-	@Test
+	// @Test
 	public void testPush() {
 		final AtomicInteger count = new AtomicInteger(0);
 		long start = System.currentTimeMillis();

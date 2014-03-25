@@ -117,6 +117,17 @@ public class PushBuffer {
 											n.setSuccess(null);
 										}
 									}
+								} else {
+									/*
+									 * if handshake fail and greater than max handshake retry,
+									 * future will be failed. Now simply notify the each listener
+									 * failure. TODO: This will be improved in next version.
+									 */
+									for (NotificationPromise n : notifications) {
+										if (!n.isDone()) {
+											n.setFailure(n.cause());
+										}
+									}
 								}
 							}
 						});
